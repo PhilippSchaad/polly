@@ -22,14 +22,19 @@
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
+#ifdef HAS_INTEL_OCL
+#include <CL/cl_intel.h>
+#else
 #include <CL/cl.h>
-#endif
+#endif /* HAS_INTEL_OCL */
+#endif /* __APPLE__ */
 #endif /* HAS_LIBOPENCL */
 
 #include <dlfcn.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int DebugMode;
 static int CacheMode;
@@ -139,11 +144,19 @@ clEnqueueWriteBufferFcnTy(cl_command_queue CommandQueue, cl_mem Buffer,
                           const cl_event *EventWaitList, cl_event *Event);
 static clEnqueueWriteBufferFcnTy *clEnqueueWriteBufferFcnPtr;
 
+#ifdef HAS_INTEL_OCL
+typedef cl_program
+clCreateProgramWithLLVMIntelFcnTy(cl_context Context, cl_uint NumDevices,
+                                  const cl_device_id *DeviceList,
+                                  const char *Filename, cl_int *ErrcodeRet);
+static clCreateProgramWithLLVMIntelFcnTy *clCreateProgramWithLLVMIntelFcnPtr;
+#else
 typedef cl_program clCreateProgramWithBinaryFcnTy(
     cl_context Context, cl_uint NumDevices, const cl_device_id *DeviceList,
     const size_t *Lengths, const unsigned char **Binaries, cl_int *BinaryStatus,
     cl_int *ErrcodeRet);
 static clCreateProgramWithBinaryFcnTy *clCreateProgramWithBinaryFcnPtr;
+#endif /* HAS_INTEL_OCL */
 
 typedef cl_int clBuildProgramFcnTy(
     cl_program Program, cl_uint NumDevices, const cl_device_id *DeviceList,
@@ -210,7 +223,11 @@ static void *getAPIHandleCL(void *Handle, const char *FuncName) {
 }
 
 static int initialDeviceAPILibrariesCL() {
+#ifdef HAS_INTEL_OCL
+  HandleOpenCL = dlopen("/usr/local/lib/beignet/libcl.so", RTLD_LAZY);
+#else
   HandleOpenCL = dlopen("libOpenCL.so", RTLD_LAZY);
+#endif /* HAS_INTEL_OCL */
   if (!HandleOpenCL) {
     fprintf(stderr, "Cannot open library: %s. \n", dlerror());
     return 0;
@@ -261,9 +278,15 @@ static int initialDeviceAPIsCL() {
   clEnqueueWriteBufferFcnPtr = (clEnqueueWriteBufferFcnTy *)getAPIHandleCL(
       HandleOpenCL, "clEnqueueWriteBuffer");
 
+#ifdef HAS_INTEL_OCL
+  clCreateProgramWithLLVMIntelFcnPtr =
+      (clCreateProgramWithLLVMIntelFcnTy *)getAPIHandleCL(
+          HandleOpenCL, "clCreateProgramWithLLVMIntel");
+#else
   clCreateProgramWithBinaryFcnPtr =
       (clCreateProgramWithBinaryFcnTy *)getAPIHandleCL(
           HandleOpenCL, "clCreateProgramWithBinary");
+#endif /* HAS_INTEL_OCL */
 
   clBuildProgramFcnPtr =
       (clBuildProgramFcnTy *)getAPIHandleCL(HandleOpenCL, "clBuildProgram");
@@ -481,12 +504,28 @@ static PollyGPUFunction *getKernelCL(const char *BinaryBuffer,
   }
 
   cl_int Ret;
+
+#ifdef HAS_INTEL_OCL
+  FILE *fp = fopen("kernel.ll", "wb");
+  if (fp != NULL) {
+    fputs(BinaryBuffer, fp);
+    fclose(fp);
+  }
+
+  ((OpenCLKernel *)Function->Kernel)->Program =
+      clCreateProgramWithLLVMIntelFcnPtr(
+          ((OpenCLContext *)GlobalContext->Context)->Context, 1,
+          &GlobalDeviceID, "kernel.ll", &Ret);
+  checkOpenCLError(Ret, "Failed to create program from llvm.\n");
+  unlink("kernel.ll");
+#else
   size_t BinarySize = strlen(BinaryBuffer);
   ((OpenCLKernel *)Function->Kernel)->Program = clCreateProgramWithBinaryFcnPtr(
       ((OpenCLContext *)GlobalContext->Context)->Context, 1, &GlobalDeviceID,
       (const size_t *)&BinarySize, (const unsigned char **)&BinaryBuffer, NULL,
       &Ret);
   checkOpenCLError(Ret, "Failed to create program from binary.\n");
+#endif /* HAS_INTEL_OCL */
 
   Ret = clBuildProgramFcnPtr(((OpenCLKernel *)Function->Kernel)->Program, 1,
                              &GlobalDeviceID, NULL, NULL, NULL);

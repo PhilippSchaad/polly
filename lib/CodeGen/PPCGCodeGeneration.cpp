@@ -37,6 +37,8 @@
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
+#include <regex>
+
 #include "isl/union_map.h"
 
 extern "C" {
@@ -569,6 +571,11 @@ private:
   ///
   /// @returns A string containing the corresponding PTX assembly code.
   std::string createKernelASM();
+
+  /// Create a SPIR string for the current GPU kernel.
+  ///
+  /// @returns A string containing the corresponding  SPIR code.
+  std::string createKernelSPIR(std::string IR);
 
   /// Remove references from the dominator tree to the kernel function @p F.
   ///
@@ -1234,6 +1241,8 @@ void GPUNodeBuilder::createKernelSync() {
   Function *Sync;
 
   switch (Arch) {
+  case GPUArch::SPIR64:
+  case GPUArch::SPIR32:
   case GPUArch::NVPTX64:
     Sync = Intrinsic::getDeclaration(M, Intrinsic::nvvm_barrier0);
     break;
@@ -1629,7 +1638,8 @@ void GPUNodeBuilder::createKernel(__isl_take isl_ast_node *KernelStmt) {
 
   finalizeKernelArguments(Kernel);
   Function *F = Builder.GetInsertBlock()->getParent();
-  addCUDAAnnotations(F->getParent(), BlockDimX, BlockDimY, BlockDimZ);
+  if (Arch == GPUArch::NVPTX64)
+    addCUDAAnnotations(F->getParent(), BlockDimX, BlockDimY, BlockDimZ);
   clearDominators(F);
   clearScalarEvolution(F);
   clearLoops(F);
@@ -1686,11 +1696,34 @@ static std::string computeNVPTXDataLayout(bool is64Bit) {
   return Ret;
 }
 
+/// Compute the DataLayout string for a SPIR kernel.
+///
+/// @param is64Bit Are we looking for a 64 bit architecture?
+static std::string computeSPIRDataLayout(bool is64Bit) {
+  std::string Ret = "";
+
+  if (!is64Bit) {
+    Ret += "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:"
+           "64-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:"
+           "32-v48:64:64-v64:64:64-v96:128:128-v128:128:128-v192:"
+           "256:256-v256:256:256-v512:512:512-v1024:1024:1024";
+  } else {
+    Ret += "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:"
+           "64-f32:32:32-f64:64:64-v16:16:16-v24:32:32-v32:32:"
+           "32-v48:64:64-v64:64:64-v96:128:128-v128:128:128-v192:"
+           "256:256-v256:256:256-v512:512:512-v1024:1024:1024";
+  }
+
+  return Ret;
+}
+
 Function *
 GPUNodeBuilder::createKernelFunctionDecl(ppcg_kernel *Kernel,
                                          SetVector<Value *> &SubtreeValues) {
   std::vector<Type *> Args;
   std::string Identifier = getKernelFuncName(Kernel->id);
+
+  std::vector<Metadata *> MemoryType;
 
   for (long i = 0; i < Prog->n_array; i++) {
     if (!ppcg_kernel_requires_array_argument(Kernel, i))
@@ -1700,16 +1733,23 @@ GPUNodeBuilder::createKernelFunctionDecl(ppcg_kernel *Kernel,
       isl_id *Id = isl_space_get_tuple_id(Prog->array[i].space, isl_dim_set);
       const ScopArrayInfo *SAI = ScopArrayInfo::getFromId(Id);
       Args.push_back(SAI->getElementType());
+      MemoryType.push_back(
+          ConstantAsMetadata::get(ConstantInt::get(Builder.getInt32Ty(), 0)));
     } else {
       static const int UseGlobalMemory = 1;
       Args.push_back(Builder.getInt8PtrTy(UseGlobalMemory));
+      MemoryType.push_back(
+          ConstantAsMetadata::get(ConstantInt::get(Builder.getInt32Ty(), 1)));
     }
   }
 
   int NumHostIters = isl_space_dim(Kernel->space, isl_dim_set);
 
-  for (long i = 0; i < NumHostIters; i++)
+  for (long i = 0; i < NumHostIters; i++) {
     Args.push_back(Builder.getInt64Ty());
+    MemoryType.push_back(
+        ConstantAsMetadata::get(ConstantInt::get(Builder.getInt32Ty(), 0)));
+  }
 
   int NumVars = isl_space_dim(Kernel->space, isl_dim_param);
 
@@ -1718,18 +1758,48 @@ GPUNodeBuilder::createKernelFunctionDecl(ppcg_kernel *Kernel,
     Value *Val = IDToValue[Id];
     isl_id_free(Id);
     Args.push_back(Val->getType());
+    MemoryType.push_back(
+        ConstantAsMetadata::get(ConstantInt::get(Builder.getInt32Ty(), 0)));
   }
 
-  for (auto *V : SubtreeValues)
+  for (auto *V : SubtreeValues) {
     Args.push_back(V->getType());
+    MemoryType.push_back(
+        ConstantAsMetadata::get(ConstantInt::get(Builder.getInt32Ty(), 0)));
+  }
 
   auto *FT = FunctionType::get(Builder.getVoidTy(), Args, false);
   auto *FN = Function::Create(FT, Function::ExternalLinkage, Identifier,
                               GPUModule.get());
 
+  std::vector<Metadata *> EmptyStrings;
+
+  for (unsigned int i = 0; i < MemoryType.size(); i++) {
+    EmptyStrings.push_back(MDString::get(FN->getContext(), ""));
+  }
+
+  if (Arch == GPUArch::SPIR32 || Arch == GPUArch::SPIR64) {
+    FN->setMetadata("kernel_arg_addr_space",
+                    MDNode::get(FN->getContext(), MemoryType));
+    FN->setMetadata("kernel_arg_name",
+                    MDNode::get(FN->getContext(), EmptyStrings));
+    FN->setMetadata("kernel_arg_access_qual",
+                    MDNode::get(FN->getContext(), EmptyStrings));
+    FN->setMetadata("kernel_arg_type",
+                    MDNode::get(FN->getContext(), EmptyStrings));
+    FN->setMetadata("kernel_arg_type_qual",
+                    MDNode::get(FN->getContext(), EmptyStrings));
+    FN->setMetadata("kernel_arg_base_type",
+                    MDNode::get(FN->getContext(), EmptyStrings));
+  }
+
   switch (Arch) {
   case GPUArch::NVPTX64:
     FN->setCallingConv(CallingConv::PTX_Kernel);
+    break;
+  case GPUArch::SPIR32:
+  case GPUArch::SPIR64:
+    FN->setCallingConv(CallingConv::SPIR_KERNEL);
     break;
   }
 
@@ -1796,6 +1866,8 @@ void GPUNodeBuilder::insertKernelIntrinsics(ppcg_kernel *Kernel) {
   Intrinsic::ID IntrinsicsTID[3];
 
   switch (Arch) {
+  case GPUArch::SPIR64:
+  case GPUArch::SPIR32:
   case GPUArch::NVPTX64:
     IntrinsicsBID[0] = Intrinsic::nvvm_read_ptx_sreg_ctaid_x;
     IntrinsicsBID[1] = Intrinsic::nvvm_read_ptx_sreg_ctaid_y;
@@ -1965,6 +2037,14 @@ void GPUNodeBuilder::createKernelFunction(
       GPUModule->setTargetTriple(Triple::normalize("nvptx64-nvidia-nvcl"));
     GPUModule->setDataLayout(computeNVPTXDataLayout(true /* is64Bit */));
     break;
+  case GPUArch::SPIR32:
+    GPUModule->setTargetTriple(Triple::normalize("spir-unknown-unknown"));
+    GPUModule->setDataLayout(computeSPIRDataLayout(false /* is64Bit */));
+    break;
+  case GPUArch::SPIR64:
+    GPUModule->setTargetTriple(Triple::normalize("spir64-unknown-unknown"));
+    GPUModule->setDataLayout(computeSPIRDataLayout(true /* is64Bit */));
+    break;
   }
 
   Function *FN = createKernelFunctionDecl(Kernel, SubtreeValues);
@@ -1999,6 +2079,10 @@ std::string GPUNodeBuilder::createKernelASM() {
       break;
     }
     break;
+  case GPUArch::SPIR64:
+  case GPUArch::SPIR32:
+    llvm_unreachable("Cannot generate ASM for SPIR architecture");
+    break;
   }
 
   std::string ErrMsg;
@@ -2017,6 +2101,10 @@ std::string GPUNodeBuilder::createKernelASM() {
   switch (Arch) {
   case GPUArch::NVPTX64:
     subtarget = CudaVersion;
+    break;
+  case GPUArch::SPIR32:
+  case GPUArch::SPIR64:
+    llvm_unreachable("No subtarget for SPIR architecture");
     break;
   }
 
@@ -2040,6 +2128,48 @@ std::string GPUNodeBuilder::createKernelASM() {
   return ASMStream.str();
 }
 
+std::string StringReplace(std::string const &in, std::string const &replace,
+                          std::string const &with) {
+  return std::regex_replace(in, std::regex(replace), with);
+}
+
+std::string GPUNodeBuilder::createKernelSPIR(std::string IR) {
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.x\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_local_id0()");
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.y\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_local_id1()");
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.z\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_local_id2()");
+
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_group_id0()");
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.y\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_group_id1()");
+  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.z\\(\\)",
+                     "declare spir_func i32 @__gen_ocl_get_group_id2()");
+
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.x\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_local_id0()");
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.y\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_local_id1()");
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.z\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_local_id2()");
+
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_group_id0()");
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.y\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_group_id1()");
+  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.z\\(\\)",
+                     "call spir_func i32 @__gen_ocl_get_group_id2()");
+
+  IR = StringReplace(IR, "declare void @llvm.nvvm.barrier0\\(\\)",
+                     "declare spir_func void @__gen_ocl_barrier_global()");
+  IR = StringReplace(IR, "call void @llvm.nvvm.barrier0\\(\\)",
+                     "call spir_func void @__gen_ocl_barrier_global()");
+
+  return IR;
+}
+
 std::string GPUNodeBuilder::finalizeKernelFunction() {
 
   if (verifyModule(*GPUModule)) {
@@ -2056,15 +2186,27 @@ std::string GPUNodeBuilder::finalizeKernelFunction() {
   if (DumpKernelIR)
     outs() << *GPUModule << "\n";
 
-  // Optimize module.
-  llvm::legacy::PassManager OptPasses;
-  PassManagerBuilder PassBuilder;
-  PassBuilder.OptLevel = 3;
-  PassBuilder.SizeLevel = 0;
-  PassBuilder.populateModulePassManager(OptPasses);
-  OptPasses.run(*GPUModule);
+  if (Arch != GPUArch::SPIR32 && Arch != GPUArch::SPIR64) {
+    // Optimize module.
+    llvm::legacy::PassManager OptPasses;
+    PassManagerBuilder PassBuilder;
+    PassBuilder.OptLevel = 3;
+    PassBuilder.SizeLevel = 0;
+    PassBuilder.populateModulePassManager(OptPasses);
+    OptPasses.run(*GPUModule);
+  }
 
-  std::string Assembly = createKernelASM();
+  std::string Assembly;
+
+  if (Arch == GPUArch::SPIR32 || Arch == GPUArch::SPIR64) {
+    std::string IR;
+    raw_string_ostream IROstream(IR);
+    IROstream << *GPUModule;
+    IROstream.flush();
+    Assembly = createKernelSPIR(IR);
+  } else {
+    Assembly = createKernelASM();
+  }
 
   if (DumpKernelASM)
     outs() << Assembly << "\n";
