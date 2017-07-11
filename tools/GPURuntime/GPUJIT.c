@@ -502,6 +502,9 @@ static PollyGPUFunction *getKernelCL(const char *BinaryBuffer,
   cl_int Ret;
 
 #ifdef HAS_INTEL_OCL
+  // TODO: This is a workaround, since clCreateProgramWithLLVMIntel only
+  // accepts a filename to a valid llvm-ir file as an argument, instead
+  // of accepting the BinaryBuffer directly.
   FILE *fp = fopen("kernel.ll", "wb");
   if (fp != NULL) {
     fputs(BinaryBuffer, fp);
