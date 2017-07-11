@@ -37,8 +37,6 @@
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
-#include <regex>
-
 #include "isl/union_map.h"
 
 extern "C" {
@@ -534,6 +532,11 @@ private:
   /// @param The kernel to generate the intrinsic functions for.
   void insertKernelIntrinsics(ppcg_kernel *Kernel);
 
+  /// Insert function calls to retrieve the SPIR group/local ids.
+  ///
+  /// @param The kernel to generate the function calls for.
+  void insertIDCallsSPIR(ppcg_kernel *Kernel);
+
   /// Setup the creation of functions referenced by the GPU kernel.
   ///
   /// 1. Create new function declarations in GPUModule which are the same as
@@ -571,11 +574,6 @@ private:
   ///
   /// @returns A string containing the corresponding PTX assembly code.
   std::string createKernelASM();
-
-  /// Create a SPIR string for the current GPU kernel.
-  ///
-  /// @returns A string containing the corresponding  SPIR code.
-  std::string createKernelSPIR(std::string IR);
 
   /// Remove references from the dominator tree to the kernel function @p F.
   ///
@@ -1880,6 +1878,7 @@ void GPUNodeBuilder::insertKernelIntrinsics(ppcg_kernel *Kernel) {
   switch (Arch) {
   case GPUArch::SPIR64:
   case GPUArch::SPIR32:
+    llvm_unreachable("Cannot generate NVVM intrinsics for SPIR");
   case GPUArch::NVPTX64:
     IntrinsicsBID[0] = Intrinsic::nvvm_read_ptx_sreg_ctaid_x;
     IntrinsicsBID[1] = Intrinsic::nvvm_read_ptx_sreg_ctaid_y;
@@ -1908,6 +1907,53 @@ void GPUNodeBuilder::insertKernelIntrinsics(ppcg_kernel *Kernel) {
   for (int i = 0; i < Kernel->n_block; ++i) {
     isl_id *Id = isl_id_list_get_id(Kernel->thread_ids, i);
     addId(Id, IntrinsicsTID[i]);
+  }
+}
+
+void GPUNodeBuilder::insertIDCallsSPIR(ppcg_kernel *Kernel) {
+  const char *GroupNameX = "__gen_ocl_get_group_id0";
+  const char *GroupNameY = "__gen_ocl_get_group_id1";
+  const char *GroupNameZ = "__gen_ocl_get_group_id2";
+
+  const char *LocalNameX = "__gen_ocl_get_local_id0";
+  const char *LocalNameY = "__gen_ocl_get_local_id1";
+  const char *LocalNameZ = "__gen_ocl_get_local_id2";
+
+  auto createFunc = [this](const char *Name, __isl_take isl_id *Id) mutable {
+    Module *M = Builder.GetInsertBlock()->getParent()->getParent();
+    Function *FN = M->getFunction(Name);
+
+    // If FN is not available, declare it.
+    if (!FN) {
+      GlobalValue::LinkageTypes Linkage = Function::ExternalLinkage;
+      std::vector<Type *> Args;
+      FunctionType *Ty = FunctionType::get(Builder.getInt32Ty(), Args, false);
+      FN = Function::Create(Ty, Linkage, Name, M);
+      FN->setCallingConv(CallingConv::SPIR_FUNC);
+    }
+
+    Value *Val = Builder.CreateCall(FN, {});
+    Val = Builder.CreateIntCast(Val, Builder.getInt64Ty(), false, Name);
+    IDToValue[Id] = Val;
+    KernelIDs.insert(std::unique_ptr<isl_id, IslIdDeleter>(Id));
+  };
+
+  for (int i = 0; i < Kernel->n_grid; ++i) {
+    if (i == 0)
+      createFunc(GroupNameX, isl_id_list_get_id(Kernel->block_ids, i));
+    if (i == 1)
+      createFunc(GroupNameY, isl_id_list_get_id(Kernel->block_ids, i));
+    if (i == 2)
+      createFunc(GroupNameZ, isl_id_list_get_id(Kernel->block_ids, i));
+  }
+
+  for (int i = 0; i < Kernel->n_block; ++i) {
+    if (i == 0)
+      createFunc(LocalNameX, isl_id_list_get_id(Kernel->thread_ids, i));
+    if (i == 1)
+      createFunc(LocalNameY, isl_id_list_get_id(Kernel->thread_ids, i));
+    if (i == 2)
+      createFunc(LocalNameZ, isl_id_list_get_id(Kernel->thread_ids, i));
   }
 }
 
@@ -2074,7 +2120,16 @@ void GPUNodeBuilder::createKernelFunction(
 
   prepareKernelArguments(Kernel, FN);
   createKernelVariables(Kernel, FN);
-  insertKernelIntrinsics(Kernel);
+  
+  switch(Arch) {
+  case GPUArch::NVPTX64:
+    insertKernelIntrinsics(Kernel);
+    break;
+  case GPUArch::SPIR32:
+  case GPUArch::SPIR64:
+    insertIDCallsSPIR(Kernel);
+    break;
+  }
 }
 
 std::string GPUNodeBuilder::createKernelASM() {
@@ -2140,43 +2195,6 @@ std::string GPUNodeBuilder::createKernelASM() {
   return ASMStream.str();
 }
 
-std::string StringReplace(std::string const &in, std::string const &replace,
-                          std::string const &with) {
-  return std::regex_replace(in, std::regex(replace), with);
-}
-
-std::string GPUNodeBuilder::createKernelSPIR(std::string IR) {
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.x\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_local_id0()");
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.y\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_local_id1()");
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.tid.z\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_local_id2()");
-
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.x\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_group_id0()");
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.y\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_group_id1()");
-  IR = StringReplace(IR, "declare i32 @llvm.nvvm.read.ptx.sreg.ctaid.z\\(\\)",
-                     "declare spir_func i32 @__gen_ocl_get_group_id2()");
-
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.x\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_local_id0()");
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.y\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_local_id1()");
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.tid.z\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_local_id2()");
-
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.x\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_group_id0()");
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.y\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_group_id1()");
-  IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.z\\(\\)",
-                     "call spir_func i32 @__gen_ocl_get_group_id2()");
-
-  return IR;
-}
-
 std::string GPUNodeBuilder::finalizeKernelFunction() {
 
   if (verifyModule(*GPUModule)) {
@@ -2206,11 +2224,9 @@ std::string GPUNodeBuilder::finalizeKernelFunction() {
   std::string Assembly;
 
   if (Arch == GPUArch::SPIR32 || Arch == GPUArch::SPIR64) {
-    std::string IR;
-    raw_string_ostream IROstream(IR);
+    raw_string_ostream IROstream(Assembly);
     IROstream << *GPUModule;
     IROstream.flush();
-    Assembly = createKernelSPIR(IR);
   } else {
     Assembly = createKernelASM();
   }
