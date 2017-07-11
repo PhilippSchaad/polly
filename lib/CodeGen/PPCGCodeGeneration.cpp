@@ -1237,12 +1237,24 @@ void GPUNodeBuilder::createScopStmt(isl_ast_expr *Expr,
 
 void GPUNodeBuilder::createKernelSync() {
   Module *M = Builder.GetInsertBlock()->getParent()->getParent();
+  const char *SpirName = "__gen_ocl_barrier_global";
 
   Function *Sync;
 
   switch (Arch) {
   case GPUArch::SPIR64:
   case GPUArch::SPIR32:
+    Sync = M->getFunction(SpirName);
+
+    // If Sync is not available, declare it.
+    if (!Sync) {
+      GlobalValue::LinkageTypes Linkage = Function::ExternalLinkage;
+      std::vector<Type *> Args;
+      FunctionType *Ty = FunctionType::get(Builder.getVoidTy(), Args, false);
+      Sync = Function::Create(Ty, Linkage, SpirName, M);
+      Sync->setCallingConv(CallingConv::SPIR_FUNC);
+    }
+    break;
   case GPUArch::NVPTX64:
     Sync = Intrinsic::getDeclaration(M, Intrinsic::nvvm_barrier0);
     break;
@@ -2161,11 +2173,6 @@ std::string GPUNodeBuilder::createKernelSPIR(std::string IR) {
                      "call spir_func i32 @__gen_ocl_get_group_id1()");
   IR = StringReplace(IR, "call i32 @llvm.nvvm.read.ptx.sreg.ctaid.z\\(\\)",
                      "call spir_func i32 @__gen_ocl_get_group_id2()");
-
-  IR = StringReplace(IR, "declare void @llvm.nvvm.barrier0\\(\\)",
-                     "declare spir_func void @__gen_ocl_barrier_global()");
-  IR = StringReplace(IR, "call void @llvm.nvvm.barrier0\\(\\)",
-                     "call spir_func void @__gen_ocl_barrier_global()");
 
   return IR;
 }
