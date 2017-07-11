@@ -1911,13 +1911,17 @@ void GPUNodeBuilder::insertKernelIntrinsics(ppcg_kernel *Kernel) {
 }
 
 void GPUNodeBuilder::insertIDCallsSPIR(ppcg_kernel *Kernel) {
-  const char *GroupNameX = "__gen_ocl_get_group_id0";
-  const char *GroupNameY = "__gen_ocl_get_group_id1";
-  const char *GroupNameZ = "__gen_ocl_get_group_id2";
+  const char* GroupName[3] = {
+    "__gen_ocl_get_group_id0",
+    "__gen_ocl_get_group_id1",
+    "__gen_ocl_get_group_id2"
+  };
 
-  const char *LocalNameX = "__gen_ocl_get_local_id0";
-  const char *LocalNameY = "__gen_ocl_get_local_id1";
-  const char *LocalNameZ = "__gen_ocl_get_local_id2";
+  const char* LocalName[3] = {
+    "__gen_ocl_get_local_id0",
+    "__gen_ocl_get_local_id1",
+    "__gen_ocl_get_local_id2"
+  };
 
   auto createFunc = [this](const char *Name, __isl_take isl_id *Id) mutable {
     Module *M = Builder.GetInsertBlock()->getParent()->getParent();
@@ -1938,23 +1942,11 @@ void GPUNodeBuilder::insertIDCallsSPIR(ppcg_kernel *Kernel) {
     KernelIDs.insert(std::unique_ptr<isl_id, IslIdDeleter>(Id));
   };
 
-  for (int i = 0; i < Kernel->n_grid; ++i) {
-    if (i == 0)
-      createFunc(GroupNameX, isl_id_list_get_id(Kernel->block_ids, i));
-    if (i == 1)
-      createFunc(GroupNameY, isl_id_list_get_id(Kernel->block_ids, i));
-    if (i == 2)
-      createFunc(GroupNameZ, isl_id_list_get_id(Kernel->block_ids, i));
-  }
+  for (int i = 0; i < Kernel->n_grid; ++i)
+    createFunc(GroupName[i], isl_id_list_get_id(Kernel->block_ids, i));
 
-  for (int i = 0; i < Kernel->n_block; ++i) {
-    if (i == 0)
-      createFunc(LocalNameX, isl_id_list_get_id(Kernel->thread_ids, i));
-    if (i == 1)
-      createFunc(LocalNameY, isl_id_list_get_id(Kernel->thread_ids, i));
-    if (i == 2)
-      createFunc(LocalNameZ, isl_id_list_get_id(Kernel->thread_ids, i));
-  }
+  for (int i = 0; i < Kernel->n_block; ++i)
+    createFunc(LocalName[i], isl_id_list_get_id(Kernel->thread_ids, i));
 }
 
 void GPUNodeBuilder::prepareKernelArguments(ppcg_kernel *Kernel, Function *FN) {
