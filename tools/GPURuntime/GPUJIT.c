@@ -144,19 +144,17 @@ clEnqueueWriteBufferFcnTy(cl_command_queue CommandQueue, cl_mem Buffer,
                           const cl_event *EventWaitList, cl_event *Event);
 static clEnqueueWriteBufferFcnTy *clEnqueueWriteBufferFcnPtr;
 
-#ifdef HAS_INTEL_OCL
 typedef cl_program
 clCreateProgramWithLLVMIntelFcnTy(cl_context Context, cl_uint NumDevices,
                                   const cl_device_id *DeviceList,
                                   const char *Filename, cl_int *ErrcodeRet);
 static clCreateProgramWithLLVMIntelFcnTy *clCreateProgramWithLLVMIntelFcnPtr;
-#else
+
 typedef cl_program clCreateProgramWithBinaryFcnTy(
     cl_context Context, cl_uint NumDevices, const cl_device_id *DeviceList,
     const size_t *Lengths, const unsigned char **Binaries, cl_int *BinaryStatus,
     cl_int *ErrcodeRet);
 static clCreateProgramWithBinaryFcnTy *clCreateProgramWithBinaryFcnPtr;
-#endif /* HAS_INTEL_OCL */
 
 typedef cl_int clBuildProgramFcnTy(
     cl_program Program, cl_uint NumDevices, const cl_device_id *DeviceList,
@@ -278,15 +276,13 @@ static int initialDeviceAPIsCL() {
   clEnqueueWriteBufferFcnPtr = (clEnqueueWriteBufferFcnTy *)getAPIHandleCL(
       HandleOpenCL, "clEnqueueWriteBuffer");
 
-#ifdef HAS_INTEL_OCL
   clCreateProgramWithLLVMIntelFcnPtr =
       (clCreateProgramWithLLVMIntelFcnTy *)getAPIHandleCL(
           HandleOpenCL, "clCreateProgramWithLLVMIntel");
-#else
+
   clCreateProgramWithBinaryFcnPtr =
       (clCreateProgramWithBinaryFcnTy *)getAPIHandleCL(
           HandleOpenCL, "clCreateProgramWithBinary");
-#endif /* HAS_INTEL_OCL */
 
   clBuildProgramFcnPtr =
       (clBuildProgramFcnTy *)getAPIHandleCL(HandleOpenCL, "clBuildProgram");
