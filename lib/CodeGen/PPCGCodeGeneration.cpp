@@ -1911,17 +1911,13 @@ void GPUNodeBuilder::insertKernelIntrinsics(ppcg_kernel *Kernel) {
 }
 
 void GPUNodeBuilder::insertIDCallsSPIR(ppcg_kernel *Kernel) {
-  const char* GroupName[3] = {
-    "__gen_ocl_get_group_id0",
-    "__gen_ocl_get_group_id1",
-    "__gen_ocl_get_group_id2"
-  };
+  const char *GroupName[3] = {"__gen_ocl_get_group_id0",
+                              "__gen_ocl_get_group_id1",
+                              "__gen_ocl_get_group_id2"};
 
-  const char* LocalName[3] = {
-    "__gen_ocl_get_local_id0",
-    "__gen_ocl_get_local_id1",
-    "__gen_ocl_get_local_id2"
-  };
+  const char *LocalName[3] = {"__gen_ocl_get_local_id0",
+                              "__gen_ocl_get_local_id1",
+                              "__gen_ocl_get_local_id2"};
 
   auto createFunc = [this](const char *Name, __isl_take isl_id *Id) mutable {
     Module *M = Builder.GetInsertBlock()->getParent()->getParent();
@@ -2112,8 +2108,8 @@ void GPUNodeBuilder::createKernelFunction(
 
   prepareKernelArguments(Kernel, FN);
   createKernelVariables(Kernel, FN);
-  
-  switch(Arch) {
+
+  switch (Arch) {
   case GPUArch::NVPTX64:
     insertKernelIntrinsics(Kernel);
     break;

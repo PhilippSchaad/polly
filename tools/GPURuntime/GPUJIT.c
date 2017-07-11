@@ -22,11 +22,7 @@
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
-#ifdef HAS_INTEL_OCL
-#include <CL/cl_intel.h>
-#else
 #include <CL/cl.h>
-#endif /* HAS_INTEL_OCL */
 #endif /* __APPLE__ */
 #endif /* HAS_LIBOPENCL */
 
@@ -94,6 +90,7 @@ struct OpenCLDevicePtrT {
 
 /* Dynamic library handles for the OpenCL runtime library. */
 static void *HandleOpenCL;
+static void *HandleOpenCLBeignet;
 
 /* Type-defines of function pointer to OpenCL Runtime API. */
 typedef cl_int clGetPlatformIDsFcnTy(cl_uint NumEntries,
@@ -221,11 +218,8 @@ static void *getAPIHandleCL(void *Handle, const char *FuncName) {
 }
 
 static int initialDeviceAPILibrariesCL() {
-#ifdef HAS_INTEL_OCL
-  HandleOpenCL = dlopen("/usr/local/lib/beignet/libcl.so", RTLD_LAZY);
-#else
+  HandleOpenCLBeignet = dlopen("/usr/local/lib/beignet/libcl.so", RTLD_LAZY);
   HandleOpenCL = dlopen("libOpenCL.so", RTLD_LAZY);
-#endif /* HAS_INTEL_OCL */
   if (!HandleOpenCL) {
     fprintf(stderr, "Cannot open library: %s. \n", dlerror());
     return 0;
@@ -252,71 +246,77 @@ static int initialDeviceAPIsCL() {
   if (initialDeviceAPILibrariesCL() == 0)
     return 0;
 
+  void *Handle = HandleOpenCL;
+
+  if (HandleOpenCLBeignet)
+    Handle = HandleOpenCLBeignet;
+
   clGetPlatformIDsFcnPtr =
-      (clGetPlatformIDsFcnTy *)getAPIHandleCL(HandleOpenCL, "clGetPlatformIDs");
+      (clGetPlatformIDsFcnTy *)getAPIHandleCL(Handle, "clGetPlatformIDs");
 
   clGetDeviceIDsFcnPtr =
-      (clGetDeviceIDsFcnTy *)getAPIHandleCL(HandleOpenCL, "clGetDeviceIDs");
+      (clGetDeviceIDsFcnTy *)getAPIHandleCL(Handle, "clGetDeviceIDs");
 
   clGetDeviceInfoFcnPtr =
-      (clGetDeviceInfoFcnTy *)getAPIHandleCL(HandleOpenCL, "clGetDeviceInfo");
+      (clGetDeviceInfoFcnTy *)getAPIHandleCL(Handle, "clGetDeviceInfo");
 
   clGetKernelInfoFcnPtr =
-      (clGetKernelInfoFcnTy *)getAPIHandleCL(HandleOpenCL, "clGetKernelInfo");
+      (clGetKernelInfoFcnTy *)getAPIHandleCL(Handle, "clGetKernelInfo");
 
   clCreateContextFcnPtr =
-      (clCreateContextFcnTy *)getAPIHandleCL(HandleOpenCL, "clCreateContext");
+      (clCreateContextFcnTy *)getAPIHandleCL(Handle, "clCreateContext");
 
   clCreateCommandQueueFcnPtr = (clCreateCommandQueueFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clCreateCommandQueue");
+      Handle, "clCreateCommandQueue");
 
   clCreateBufferFcnPtr =
-      (clCreateBufferFcnTy *)getAPIHandleCL(HandleOpenCL, "clCreateBuffer");
+      (clCreateBufferFcnTy *)getAPIHandleCL(Handle, "clCreateBuffer");
 
   clEnqueueWriteBufferFcnPtr = (clEnqueueWriteBufferFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clEnqueueWriteBuffer");
+      Handle, "clEnqueueWriteBuffer");
 
-  clCreateProgramWithLLVMIntelFcnPtr =
-      (clCreateProgramWithLLVMIntelFcnTy *)getAPIHandleCL(
-          HandleOpenCL, "clCreateProgramWithLLVMIntel");
+  if (HandleOpenCLBeignet)
+    clCreateProgramWithLLVMIntelFcnPtr =
+        (clCreateProgramWithLLVMIntelFcnTy *)getAPIHandleCL(
+            Handle, "clCreateProgramWithLLVMIntel");
 
   clCreateProgramWithBinaryFcnPtr =
       (clCreateProgramWithBinaryFcnTy *)getAPIHandleCL(
-          HandleOpenCL, "clCreateProgramWithBinary");
+          Handle, "clCreateProgramWithBinary");
 
   clBuildProgramFcnPtr =
-      (clBuildProgramFcnTy *)getAPIHandleCL(HandleOpenCL, "clBuildProgram");
+      (clBuildProgramFcnTy *)getAPIHandleCL(Handle, "clBuildProgram");
 
   clCreateKernelFcnPtr =
-      (clCreateKernelFcnTy *)getAPIHandleCL(HandleOpenCL, "clCreateKernel");
+      (clCreateKernelFcnTy *)getAPIHandleCL(Handle, "clCreateKernel");
 
   clSetKernelArgFcnPtr =
-      (clSetKernelArgFcnTy *)getAPIHandleCL(HandleOpenCL, "clSetKernelArg");
+      (clSetKernelArgFcnTy *)getAPIHandleCL(Handle, "clSetKernelArg");
 
   clEnqueueNDRangeKernelFcnPtr = (clEnqueueNDRangeKernelFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clEnqueueNDRangeKernel");
+      Handle, "clEnqueueNDRangeKernel");
 
-  clEnqueueReadBufferFcnPtr = (clEnqueueReadBufferFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clEnqueueReadBuffer");
+  clEnqueueReadBufferFcnPtr =
+      (clEnqueueReadBufferFcnTy *)getAPIHandleCL(Handle, "clEnqueueReadBuffer");
 
-  clFlushFcnPtr = (clFlushFcnTy *)getAPIHandleCL(HandleOpenCL, "clFlush");
+  clFlushFcnPtr = (clFlushFcnTy *)getAPIHandleCL(Handle, "clFlush");
 
-  clFinishFcnPtr = (clFinishFcnTy *)getAPIHandleCL(HandleOpenCL, "clFinish");
+  clFinishFcnPtr = (clFinishFcnTy *)getAPIHandleCL(Handle, "clFinish");
 
   clReleaseKernelFcnPtr =
-      (clReleaseKernelFcnTy *)getAPIHandleCL(HandleOpenCL, "clReleaseKernel");
+      (clReleaseKernelFcnTy *)getAPIHandleCL(Handle, "clReleaseKernel");
 
   clReleaseProgramFcnPtr =
-      (clReleaseProgramFcnTy *)getAPIHandleCL(HandleOpenCL, "clReleaseProgram");
+      (clReleaseProgramFcnTy *)getAPIHandleCL(Handle, "clReleaseProgram");
 
-  clReleaseMemObjectFcnPtr = (clReleaseMemObjectFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clReleaseMemObject");
+  clReleaseMemObjectFcnPtr =
+      (clReleaseMemObjectFcnTy *)getAPIHandleCL(Handle, "clReleaseMemObject");
 
   clReleaseCommandQueueFcnPtr = (clReleaseCommandQueueFcnTy *)getAPIHandleCL(
-      HandleOpenCL, "clReleaseCommandQueue");
+      Handle, "clReleaseCommandQueue");
 
   clReleaseContextFcnPtr =
-      (clReleaseContextFcnTy *)getAPIHandleCL(HandleOpenCL, "clReleaseContext");
+      (clReleaseContextFcnTy *)getAPIHandleCL(Handle, "clReleaseContext");
 
   return 1;
 }
@@ -501,30 +501,33 @@ static PollyGPUFunction *getKernelCL(const char *BinaryBuffer,
 
   cl_int Ret;
 
-#ifdef HAS_INTEL_OCL
-  // TODO: This is a workaround, since clCreateProgramWithLLVMIntel only
-  // accepts a filename to a valid llvm-ir file as an argument, instead
-  // of accepting the BinaryBuffer directly.
-  FILE *fp = fopen("kernel.ll", "wb");
-  if (fp != NULL) {
-    fputs(BinaryBuffer, fp);
-    fclose(fp);
-  }
+  if (HandleOpenCLBeignet) {
+    // TODO: This is a workaround, since clCreateProgramWithLLVMIntel only
+    // accepts a filename to a valid llvm-ir file as an argument, instead
+    // of accepting the BinaryBuffer directly.
+    FILE *fp = fopen("kernel.ll", "wb");
+    if (fp != NULL) {
+      fputs(BinaryBuffer, fp);
+      fclose(fp);
+    }
+    if (clCreateProgramWithLLVMIntelFcnPtr == NULL)
+      printf("What\n");
 
-  ((OpenCLKernel *)Function->Kernel)->Program =
-      clCreateProgramWithLLVMIntelFcnPtr(
-          ((OpenCLContext *)GlobalContext->Context)->Context, 1,
-          &GlobalDeviceID, "kernel.ll", &Ret);
-  checkOpenCLError(Ret, "Failed to create program from llvm.\n");
-  unlink("kernel.ll");
-#else
-  size_t BinarySize = strlen(BinaryBuffer);
-  ((OpenCLKernel *)Function->Kernel)->Program = clCreateProgramWithBinaryFcnPtr(
-      ((OpenCLContext *)GlobalContext->Context)->Context, 1, &GlobalDeviceID,
-      (const size_t *)&BinarySize, (const unsigned char **)&BinaryBuffer, NULL,
-      &Ret);
-  checkOpenCLError(Ret, "Failed to create program from binary.\n");
-#endif /* HAS_INTEL_OCL */
+    ((OpenCLKernel *)Function->Kernel)->Program =
+        clCreateProgramWithLLVMIntelFcnPtr(
+            ((OpenCLContext *)GlobalContext->Context)->Context, 1,
+            &GlobalDeviceID, "kernel.ll", &Ret);
+    checkOpenCLError(Ret, "Failed to create program from llvm.\n");
+    unlink("kernel.ll");
+  } else {
+    size_t BinarySize = strlen(BinaryBuffer);
+    ((OpenCLKernel *)Function->Kernel)->Program =
+        clCreateProgramWithBinaryFcnPtr(
+            ((OpenCLContext *)GlobalContext->Context)->Context, 1,
+            &GlobalDeviceID, (const size_t *)&BinarySize,
+            (const unsigned char **)&BinaryBuffer, NULL, &Ret);
+    checkOpenCLError(Ret, "Failed to create program from binary.\n");
+  }
 
   Ret = clBuildProgramFcnPtr(((OpenCLKernel *)Function->Kernel)->Program, 1,
                              &GlobalDeviceID, NULL, NULL, NULL);

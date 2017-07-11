@@ -172,11 +172,6 @@ if (OpenCL_FOUND)
   INCLUDE_DIRECTORIES( ${OpenCL_INCLUDE_DIR} )
 endif(OpenCL_FOUND)
 
-option(USE_INTEL_OCL "Uses the Intel Beignet driver for GPGPU code" OFF)
-if (USE_INTEL_OCL)
-  add_definitions(-DHAS_INTEL_OCL)
-endif(USE_INTEL_OCL)
-
 option(POLLY_BUNDLED_ISL "Use the bundled version of libisl included in Polly" ON)
 if (NOT POLLY_BUNDLED_ISL)
   find_package(ISL MODULE REQUIRED)
